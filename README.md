@@ -78,6 +78,11 @@ Allows changing between controller layouts.
 
 If `default` is set, the pak will reset the settings to the built-in controller mapping on boot.
 
+Flycast names its mapping file after the SDL joystick name, which is not the
+same on every platform, so the pak resolves the filename at runtime on `h700`.
+On a brand new install there is no mapping to resolve yet, so the built-in
+layout may only take effect from the second launch of a game onwards.
+
 When `custom` is selected, users will be allowed to customize their controller layout and have that persist across game starts. These settings will also be stored in a per-game path, and restored when that same game is played again.
 
 #### CPU Mode
@@ -93,6 +98,29 @@ Allows changing how the dpad is used in game.
 
 - default: `dpad`
 - options: `dpad`, `joystick`, `joystick and dpad`, `joystick on f2`
+
+> [!NOTE]
+> On `h700` only `dpad` and `joystick` are offered. The other two modes need
+> Trimui's `trimui_inputd`, which h700 does not have.
+>
+> `joystick` is also applied differently. On `tg5040` the input daemon redirects
+> the dpad to the stick. On `h700` the pak rewrites the flycast mapping instead,
+> and what it writes depends on whether the model has an analog stick:
+>
+> - **With a stick** (`rg34xxsp`, `rg35xxh`, `rg35xxpro`, `rg40xxh`, `rg40xxv`,
+>   `rgcubexx`) the two are swapped: the dpad drives the Dreamcast analog stick
+>   and the physical stick drives the Dreamcast dpad. Use the stick to navigate
+>   the flycast menu while this mode is on.
+> - **Without a stick** the dpad drives the Dreamcast analog stick and nothing
+>   drives the Dreamcast dpad. Flycast's own menu only moves between items on
+>   dpad input, so **it cannot be navigated in this mode**. This is the same
+>   trade `tg5040` makes with `input_no_dpad`. `MENU` still quits the game, and
+>   holding `R2` at launch still opens this pak's settings menu, so the mode can
+>   always be turned back off.
+>
+> Because that second form is not reversible, a `custom` controller layout is
+> not saved back while it is active. There is nothing to save, since the flycast
+> menu is where remapping happens.
 
 #### Widescreen Mode
 
