@@ -139,29 +139,36 @@ settings_menu() {
 	r2_value="$(coreutils timeout .1s evtest /dev/input/event3 2>/dev/null | awk '/ABS_RZ/{getline; print}' | awk '{print $2}' || true)"
 	if [ "$r2_value" = "255" ]; then
 		while true; do
-			minui_list_output="$(minui-list --disable-auto-sleep --file "$GAMESETTINGS_DIR/settings.json" --item-key "settings" --title "DC Settings" --action-button "X" --action-text "PLAY" --write-value state --confirm-text "CONFIRM")" || {
-				exit_code="$?"
-				# 4 = action button
-				# we break out of the loop because the action button is the play button
-				if [ "$exit_code" -eq 4 ]; then
-					# shellcheck disable=SC2016
-					echo "$minui_list_output" | jq -r --arg name "Controller Layout" '.settings[] | select(.name == $name) | .options[.selected]' >"$GAMESETTINGS_DIR/controller-layout.tmp"
-					# shellcheck disable=SC2016
-					echo "$minui_list_output" | jq -r --arg name "CPU Mode" '.settings[] | select(.name == $name) | .options[.selected]' >"$GAMESETTINGS_DIR/cpu-mode.tmp"
-					# shellcheck disable=SC2016
-					echo "$minui_list_output" | jq -r --arg name "DPAD Mode" '.settings[] | select(.name == $name) | .options[.selected]' >"$GAMESETTINGS_DIR/dpad-mode.tmp"
-					# shellcheck disable=SC2016
-					echo "$minui_list_output" | jq -r --arg name "Widescreen Mode" '.settings[] | select(.name == $name) | .options[.selected]' >"$GAMESETTINGS_DIR/widescreen-mode.tmp"
+			exit_code=0
+			minui_list_output="$(minui-list --disable-auto-sleep --file "$GAMESETTINGS_DIR/settings.json" --item-key "settings" --title "DC Settings" --action-button "X" --action-text "PLAY" --write-value state --confirm-text "CONFIRM")" || exit_code="$?"
 
-					break
-				fi
+			# On h700 minui-list prints "[INFO] Skipping built-in joystick ..."
+			# to stdout ahead of the JSON, because NextUI drives that pad over
+			# raw evdev instead of SDL. stdout is the data channel here, so keep
+			# only the document: otherwise settings.json is written back invalid
+			# and every jq read of it returns empty.
+			minui_list_output="$(echo "$minui_list_output" | sed -n '/^{/,$p')"
 
-				# 2 = back button, 3 = menu button
-				# both are errors, so we exit with the exit code
-				if [ "$exit_code" -ne 0 ]; then
-					exit "$exit_code"
-				fi
-			}
+			# 4 = action button
+			# we break out of the loop because the action button is the play button
+			if [ "$exit_code" -eq 4 ]; then
+				# shellcheck disable=SC2016
+				echo "$minui_list_output" | jq -r --arg name "Controller Layout" '.settings[] | select(.name == $name) | .options[.selected]' >"$GAMESETTINGS_DIR/controller-layout.tmp"
+				# shellcheck disable=SC2016
+				echo "$minui_list_output" | jq -r --arg name "CPU Mode" '.settings[] | select(.name == $name) | .options[.selected]' >"$GAMESETTINGS_DIR/cpu-mode.tmp"
+				# shellcheck disable=SC2016
+				echo "$minui_list_output" | jq -r --arg name "DPAD Mode" '.settings[] | select(.name == $name) | .options[.selected]' >"$GAMESETTINGS_DIR/dpad-mode.tmp"
+				# shellcheck disable=SC2016
+				echo "$minui_list_output" | jq -r --arg name "Widescreen Mode" '.settings[] | select(.name == $name) | .options[.selected]' >"$GAMESETTINGS_DIR/widescreen-mode.tmp"
+
+				break
+			fi
+
+			# 2 = back button, 3 = menu button
+			# both are errors, so we exit with the exit code
+			if [ "$exit_code" -ne 0 ]; then
+				exit "$exit_code"
+			fi
 
 			selected_index="$(echo "$minui_list_output" | jq -r ' .selected')"
 			# 5 = Re-apply default emulator settings
