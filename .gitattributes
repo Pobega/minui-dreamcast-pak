@@ -5,3 +5,4 @@
 Makefile export-ignore
 docker export-ignore
 screenshots export-ignore
+src export-ignore
