@@ -111,16 +111,41 @@ Allows changing how the dpad is used in game.
 >   `rgcubexx`) the two are swapped: the dpad drives the Dreamcast analog stick
 >   and the physical stick drives the Dreamcast dpad. Use the stick to navigate
 >   the flycast menu while this mode is on.
-> - **Without a stick** the dpad drives the Dreamcast analog stick and nothing
->   drives the Dreamcast dpad. Flycast's own menu only moves between items on
->   dpad input, so **it cannot be navigated in this mode**. This is the same
->   trade `tg5040` makes with `input_no_dpad`. `MENU` still quits the game, and
->   holding `R2` at launch still opens this pak's settings menu, so the mode can
->   always be turned back off.
->
-> Because that second form is not reversible, a `custom` controller layout is
-> not saved back while it is active. There is nothing to save, since the flycast
-> menu is where remapping happens.
+> - **Without a stick** the dpad drives the Dreamcast analog stick, and nothing
+>   is left to drive the Dreamcast dpad. Flycast's own menu only moves between
+>   items on dpad or arrow key input, so the pak also mirrors the dpad onto the
+>   arrow keys of a virtual keyboard while this mode is on, which keeps that
+>   menu usable. See [Dpad mirroring](#dpad-mirroring).
+
+#### Dpad mirroring
+
+> [!NOTE]
+> This applies to `h700` models without an analog stick, in `joystick` DPAD
+> Mode, and to nothing else.
+
+`gptokeyb2` mirrors the dpad onto the arrow keys of a virtual keyboard it calls
+`Fake Keyboard`, so that flycast's own menu can still be navigated while the
+dpad is driving the Dreamcast analog stick. It reads the pad through SDL and
+never grabs it, so flycast keeps receiving the dpad as well. The mapping it uses
+is `config/dpad-arrows.gptk`, which clears gptokeyb2's defaults and binds only
+the four directions.
+
+Three details make this work, and all of them are specific to NextUI on `h700`:
+
+- NextUI's SDL is built without libudev, so SDL opens no keyboard at all unless
+  `SDL_EVDEV_DEVICES` names one. The pak starts gptokeyb2, waits for its device
+  to appear, and sets that variable before launching flycast.
+- Flycast's built-in keyboard mapping binds the arrow keys to the Dreamcast
+  dpad, which would make the dpad drive the analog stick and the dpad at once.
+  While the mirror is running the pak gives the keyboard a mapping with no
+  bindings, at `$FLYCAST_CONFIG_DIR/mappings/SDL_Keyboard.cfg`. It is removed
+  again afterwards, and only ever when the pak wrote it.
+- gptokeyb2 is linked against `libinterpose.aarch64.so`, so the shim is pulled
+  out of the same release zip into `lib/`, which is already first on
+  `LD_LIBRARY_PATH`. Without it gptokeyb2 does not load at all.
+
+If the mirror cannot be started the mode still works, but flycast's menu cannot
+be navigated until DPAD Mode is set back to `dpad`.
 
 #### Widescreen Mode
 

@@ -64,22 +64,8 @@ h700_has_lstick() {
 	return 1
 }
 
-# flycast builds its mapping filename as SDL_<SDL_JoystickName>.cfg, and SDL
-# takes that name from the pad's evdev name, which is not "Xbox 360 Controller"
-# outside of tg5040. Resolve it rather than guessing.
-get_mapping_file_name() {
-	default_mapping_file_name="SDL_Xbox 360 Controller.cfg"
-	if [ "$BASE_PLATFORM" != "h700" ]; then
-		echo "$default_mapping_file_name"
-		return
-	fi
-
-	# Derive it from the evdev name of the pad, which is the node reporting both
-	# a hat and buttons. SDL takes the joystick name straight from there, so on
-	# an rgsp the "ANBERNIC-keys" node gives SDL_ANBERNIC-keys.cfg, which is
-	# what flycast writes. This is checked before the directory listing because
-	# older versions of this pak left a stale SDL_Xbox 360 Controller.cfg behind
-	# that would otherwise win.
+# The built-in pad is the node reporting both a hat and buttons.
+get_pad_event_node() {
 	for node in /dev/input/event*; do
 		if [ ! -e "$node" ]; then
 			continue
@@ -93,13 +79,144 @@ get_mapping_file_name() {
 			continue
 		fi
 
-		evdev_name="$(cat "/sys/class/input/$(basename "$node")/device/name" 2>/dev/null || true)"
+		echo "$node"
+		return
+	done
+}
+
+# gptokeyb2 creates a keyboard and a mouse, and has renamed the keyboard
+# between releases ("Fake Keyboard" before 2.00.03, "Fake Keyboard Mouse"
+# after), so match on the prefix and ignore the mouse.
+find_fake_keyboard_node() {
+	for node in /dev/input/event*; do
+		if [ ! -e "$node" ]; then
+			continue
+		fi
+		name="$(cat "/sys/class/input/$(basename "$node")/device/name" 2>/dev/null || true)"
+		case "$name" in
+		"Fake Keyboard"*)
+			echo "$node"
+			return
+			;;
+		esac
+	done
+}
+
+# Mirror the dpad onto arrow keys so flycast's own menu stays navigable while
+# the dpad is driving the Dreamcast analog stick. imgui moves between items on
+# dpad or arrow keys only, and a model with no analog stick has nothing else
+# left to offer it.
+#
+# gptokeyb2 reads the pad through SDL and writes the arrow keys to a uinput
+# keyboard it calls "Fake Keyboard". It never grabs the pad, so flycast keeps
+# receiving the dpad as well.
+#
+# NextUI's SDL is built without libudev, so SDL_EVDEV opens no keyboard at all
+# unless SDL_EVDEV_DEVICES names one. The 2 is SDL_UDEV_DEVICE_KEYBOARD.
+start_dpad_keyboard() {
+	if ! command -v gptokeyb2 >/dev/null 2>&1; then
+		return 1
+	fi
+
+	# A session killed hard enough to skip cleanup leaves gptokeyb2 and its
+	# uinput device behind. Clear those out first, and wait for the node to go
+	# with them, so the lookup below cannot settle on an orphan's device
+	# instead: they share a name.
+	stop_dpad_keyboard
+	tries=0
+	while [ -n "$(find_fake_keyboard_node)" ] && [ "$tries" -lt 20 ]; do
+		tries=$((tries + 1))
+		coreutils sleep .1
+	done
+
+	# the program name is what gptokeyb2 watches to know when to stop
+	gptokeyb2 flycast -c "$PAK_DIR/config/dpad-arrows.gptk" >/dev/null 2>&1 &
+
+	# wait for its uinput device to appear, then point SDL at it
+	tries=0
+	while [ "$tries" -lt 20 ]; do
+		node="$(find_fake_keyboard_node)"
+		if [ -n "$node" ]; then
+			export SDL_EVDEV_DEVICES="2:$node"
+			return 0
+		fi
+		tries=$((tries + 1))
+		coreutils sleep .1
+	done
+
+	stop_dpad_keyboard
+	return 1
+}
+
+# flycast's built-in keyboard mapping binds the arrow keys to the Dreamcast
+# dpad (KeyboardInputMapping in keyboard_device.h), so a mirrored dpad would
+# drive the analog stick and the dpad at once. Give the keyboard a mapping with
+# no bindings instead. imgui still sees the keys, because gui_keyboard_key runs
+# whatever the mapping says, but nothing reaches the Dreamcast.
+#
+# Written only while the mirror is running and removed otherwise, because the
+# config directory is shared by every game.
+keyboard_mapping_file() {
+	echo "${FLYCAST_CONFIG_DIR}mappings/SDL_Keyboard.cfg"
+}
+
+write_neutral_keyboard_mapping() {
+	cat >"$(keyboard_mapping_file)" <<-NEUTRAL
+		[emulator]
+		dead_zone = 10
+		mapping_name = DC.pak neutral keyboard
+		rumble_power = 100
+		saturation = 100
+		version = 3
+	NEUTRAL
+}
+
+remove_neutral_keyboard_mapping() {
+	mapping_file="$(keyboard_mapping_file)"
+	if [ ! -f "$mapping_file" ]; then
+		return
+	fi
+
+	# only ever remove the one this pak wrote, never a keyboard mapping the
+	# user made for a keyboard of their own
+	if ! grep -q "^mapping_name = DC.pak neutral keyboard$" "$mapping_file"; then
+		return
+	fi
+
+	rm -f "$mapping_file"
+}
+
+# SIGKILL, because SDL_Init turns SIGTERM into an SDL_QUIT event that gptokeyb2
+# never handles, so it ignores a polite kill. This is what gptokeyb2's own
+# README does ("kill -9 $(pidof gptokeyb2)"), and the kernel tears down its
+# uinput devices when the process dies, so nothing is left behind.
+stop_dpad_keyboard() {
+	killall -9 gptokeyb2 >/dev/null 2>&1 || true
+}
+
+# flycast builds its mapping filename as SDL_<SDL_JoystickName>.cfg, and SDL
+# takes that name from the pad's evdev name, which is not "Xbox 360 Controller"
+# outside of tg5040. Resolve it rather than guessing.
+get_mapping_file_name() {
+	default_mapping_file_name="SDL_Xbox 360 Controller.cfg"
+	if [ "$BASE_PLATFORM" != "h700" ]; then
+		echo "$default_mapping_file_name"
+		return
+	fi
+
+	# Derive it from the evdev name of the pad. SDL takes the joystick name
+	# straight from there, so on an rgsp the "ANBERNIC-keys" node gives
+	# SDL_ANBERNIC-keys.cfg, which is what flycast writes. This is checked
+	# before the directory listing because older releases of this pak left a
+	# stale SDL_Xbox 360 Controller.cfg behind that would otherwise win.
+	pad_node="$(get_pad_event_node)"
+	if [ -n "$pad_node" ]; then
+		evdev_name="$(cat "/sys/class/input/$(basename "$pad_node")/device/name" 2>/dev/null || true)"
 		if [ -n "$evdev_name" ]; then
 			echo "SDL_$evdev_name.cfg"
 			return
 		fi
-		break
-	done
+	fi
 
 	# failing that, trust a mapping flycast already wrote. Skip the per-instance
 	# ones, which carry a -sdl_joystick_N suffix, and the name this pak falls
@@ -366,15 +483,22 @@ configure_platform() {
 # on its own. The stick binds in [analog] are left alone: the axes do not exist
 # on those models, so the binds are inert.
 #
-# This costs flycast's own menu, which only moves between items on dpad input,
-# but that is the same trade tg5040 makes with input_no_dpad. MENU still quits
-# the game and holding R2 at launch still opens this pak's settings menu, so
-# the mode remains escapable.
+# Both directions are anchored to the hat codes, 256 to 259, rather than to the
+# key name alone. That keeps the pair reversible, which cleanup() needs in order
+# to save a custom layout without baking this mode into it.
 map_dpad_to_analog() {
 	mapping_file="$1"
 
 	for direction in up down left right; do
-		sed -i -e "s/:btn_dpad1_$direction/:btn_analog_$direction/" "$mapping_file"
+		sed -i "s/= \(25[6-9]\):btn_dpad1_$direction/= \1:btn_analog_$direction/" "$mapping_file"
+	done
+}
+
+unmap_dpad_from_analog() {
+	mapping_file="$1"
+
+	for direction in up down left right; do
+		sed -i "s/= \(25[6-9]\):btn_analog_$direction/= \1:btn_dpad1_$direction/" "$mapping_file"
 	done
 }
 
@@ -433,12 +557,22 @@ configure_controls() {
 		fi
 	fi
 
+	# never leave the neutral keyboard mapping behind for a mode that does not
+	# use the dpad mirror
+	if [ "$BASE_PLATFORM" = "h700" ]; then
+		remove_neutral_keyboard_mapping
+	fi
+
 	if [ "$BASE_PLATFORM" = "h700" ] && [ "$dpad_mode" = "joystick" ]; then
 		if h700_has_lstick; then
 			swap_dpad_and_stick "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name"
 		else
 			map_dpad_to_analog "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name"
-			show_message "DPAD is the analog stick. The flycast menu cannot be navigated in this mode." 2
+			if start_dpad_keyboard; then
+				write_neutral_keyboard_mapping
+			else
+				show_message "DPAD is the analog stick. The flycast menu cannot be navigated in this mode." 2
+			fi
 		fi
 	fi
 }
@@ -546,6 +680,11 @@ cleanup() {
 		rm -f "$HOME/cpu_max_freq.txt"
 	fi
 
+	stop_dpad_keyboard
+	if [ "$BASE_PLATFORM" = "h700" ]; then
+		remove_neutral_keyboard_mapping
+	fi
+
 	# cleanup remap
 	if [ "$BASE_PLATFORM" != "h700" ]; then
 		rm -f /tmp/trimui_inputd/input_no_dpad
@@ -600,25 +739,19 @@ cleanup() {
 	controller_layout="$(get_controller_layout)"
 	if [ "$controller_layout" = "custom" ]; then
 		dpad_mode="$(get_dpad_mode)"
-
-		# map_dpad_to_analog is not reversible: once the hat and the stick binds
-		# both point at the analog stick there is no telling which one the dpad
-		# came from. Nothing is lost by skipping the save, because that mode
-		# leaves flycast's menu unnavigable, so there are no in-game remaps to
-		# preserve in the first place.
-		if [ "$BASE_PLATFORM" = "h700" ] && [ "$dpad_mode" = "joystick" ] && ! h700_has_lstick; then
-			sync
-			return
-		fi
-
 		mapping_file_name="$(get_mapping_file_name)"
 		mkdir -p "$GAMESETTINGS_DIR"
 		cp -f "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name" "$GAMESETTINGS_DIR/$mapping_file_name"
 
-		# the swap is layered on top of the saved mapping, so undo it before
-		# saving or the next launch would apply it to an already swapped mapping
+		# the dpad mode is layered on top of the saved mapping, so undo it before
+		# saving or the next launch would apply it to a mapping that already has
+		# it, and switching back to plain dpad would leave the dpad on the stick
 		if [ "$BASE_PLATFORM" = "h700" ] && [ "$dpad_mode" = "joystick" ]; then
-			swap_dpad_and_stick "$GAMESETTINGS_DIR/$mapping_file_name"
+			if h700_has_lstick; then
+				swap_dpad_and_stick "$GAMESETTINGS_DIR/$mapping_file_name"
+			else
+				unmap_dpad_from_analog "$GAMESETTINGS_DIR/$mapping_file_name"
+			fi
 		fi
 	fi
 
