@@ -26,6 +26,9 @@ export BASE_PLATFORM="$PLATFORM"
 # the ABS_RZ trigger axis, so the two need different hold detection.
 H700_CODE_R2=315
 
+# what flycast calls its mapping file on tg5040, and the layout this pak ships
+DEFAULT_MAPPING_FILE_NAME="SDL_Xbox 360 Controller.cfg"
+
 export HOME="$USERDATA_PATH/DC-flycast"
 export PAK_DIR="$SDCARD_PATH/Emus/$PLATFORM/DC.pak"
 export FLYCAST_BIOS_DIR="$BIOS_PATH/DC/"
@@ -45,6 +48,42 @@ get_sanitized_rom_name() {
 	ROM_NAME="$1"
 	SANITIZED_ROM_NAME="${ROM_NAME%.*}"
 	echo "$SANITIZED_ROM_NAME"
+}
+
+# flycast builds its mapping filename as SDL_<SDL_JoystickName>.cfg, and SDL
+# takes that name from the pad's evdev name, which is not "Xbox 360 Controller"
+# outside of tg5040. Resolve it rather than guessing.
+#
+# The pad is the node reporting both a hat and buttons; on an rgsp that is
+# "ANBERNIC-keys", giving SDL_ANBERNIC-keys.cfg, which is what flycast writes.
+get_mapping_file_name() {
+	if [ "$BASE_PLATFORM" != "h700" ]; then
+		echo "$DEFAULT_MAPPING_FILE_NAME"
+		return
+	fi
+
+	for node in /dev/input/event*; do
+		if [ ! -e "$node" ]; then
+			continue
+		fi
+
+		capabilities="$(coreutils timeout .2s evtest "$node" 2>/dev/null || true)"
+		if ! echo "$capabilities" | grep -q ABS_HAT0X; then
+			continue
+		fi
+		if ! echo "$capabilities" | grep -q "EV_KEY"; then
+			continue
+		fi
+
+		evdev_name="$(cat "/sys/class/input/$(basename "$node")/device/name" 2>/dev/null || true)"
+		if [ -n "$evdev_name" ]; then
+			echo "SDL_$evdev_name.cfg"
+			return
+		fi
+		break
+	done
+
+	echo "$DEFAULT_MAPPING_FILE_NAME"
 }
 
 # Is R2 being held right now? Used to decide whether to open the settings menu.
@@ -267,6 +306,7 @@ configure_platform() {
 configure_controls() {
 	controller_layout="$(get_controller_layout)"
 	dpad_mode="$(get_dpad_mode)"
+	mapping_file_name="$(get_mapping_file_name)"
 
 	if [ "$dpad_mode" = "joystick-on-f2" ]; then
 		mkdir -p /tmp/trimui_inputd/
@@ -281,13 +321,21 @@ configure_controls() {
 	fi
 
 	mkdir -p "${FLYCAST_CONFIG_DIR}mappings"
+
+	# releases before the filename was resolved at runtime copied the default
+	# layout to a name flycast never reads on h700. Drop it so it stops
+	# confusing both the user and the lookup above.
+	if [ "$mapping_file_name" != "$DEFAULT_MAPPING_FILE_NAME" ]; then
+		rm -f "${FLYCAST_CONFIG_DIR}mappings/$DEFAULT_MAPPING_FILE_NAME"
+	fi
+
 	if [ "$controller_layout" = "default" ]; then
-		cp -f "$PAK_DIR/config/mappings/default/SDL_Xbox 360 Controller.cfg" "${FLYCAST_CONFIG_DIR}mappings/SDL_Xbox 360 Controller.cfg"
+		cp -f "$PAK_DIR/config/mappings/default/$DEFAULT_MAPPING_FILE_NAME" "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name"
 	elif [ "$controller_layout" = "custom" ]; then
-		if [ -f "$GAMESETTINGS_DIR/SDL_Xbox 360 Controller.cfg" ]; then
-			cp -f "$GAMESETTINGS_DIR/SDL_Xbox 360 Controller.cfg" "${FLYCAST_CONFIG_DIR}mappings/SDL_Xbox 360 Controller.cfg"
+		if [ -f "$GAMESETTINGS_DIR/$mapping_file_name" ]; then
+			cp -f "$GAMESETTINGS_DIR/$mapping_file_name" "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name"
 		else
-			cp -f "$PAK_DIR/config/mappings/default/SDL_Xbox 360 Controller.cfg" "${FLYCAST_CONFIG_DIR}mappings/SDL_Xbox 360 Controller.cfg"
+			cp -f "$PAK_DIR/config/mappings/default/$DEFAULT_MAPPING_FILE_NAME" "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name"
 		fi
 	fi
 }
@@ -446,8 +494,9 @@ cleanup() {
 
 	controller_layout="$(get_controller_layout)"
 	if [ "$controller_layout" = "custom" ]; then
+		mapping_file_name="$(get_mapping_file_name)"
 		mkdir -p "$GAMESETTINGS_DIR"
-		cp -f "${FLYCAST_CONFIG_DIR}mappings/SDL_Xbox 360 Controller.cfg" "$GAMESETTINGS_DIR/SDL_Xbox 360 Controller.cfg"
+		cp -f "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name" "$GAMESETTINGS_DIR/$mapping_file_name"
 	fi
 
 	sync
