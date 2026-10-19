@@ -6,4 +6,5 @@ res/fonts/*
 
 !bin/arm64/gptokeyb2
 !bin/arm64/flycast
+!bin/arm64/dpad-arrows
 !bin/xdg-user-dir

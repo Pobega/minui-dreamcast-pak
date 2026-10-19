@@ -8,6 +8,9 @@ PUSH_PLATFORM ?= tg5040
 ARCHITECTURES := arm64
 PLATFORMS := tg5040 h700
 
+# any image providing aarch64-linux-gnu-gcc will do
+CROSS_IMAGE := ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5
+
 COREUTILS_VERSION := 0.0.28
 EVTEST_VERSION := 0.1.0
 JQ_VERSION := 1.7
@@ -24,12 +27,11 @@ clean:
 	rm -f bin/*/coreutils || true
 	rm -f bin/*/coreutils.LICENSE || true
 	rm -f bin/*/flycast.LICENSE || true
-	rm -f bin/*/gptokeyb2.LICENSE || true
 	rm -f bin/*/jq || true
 	rm -f bin/*/minui-list || true
 	rm -f bin/*/minui-presenter || true
 
-build: $(foreach platform,$(PLATFORMS),bin/$(platform)/minui-list bin/$(platform)/minui-presenter) $(foreach arch,$(ARCHITECTURES),bin/$(arch)/evtest bin/$(arch)/coreutils bin/$(arch)/jq) bin/arm64/flycast.LICENSE bin/arm64/gptokeyb2.LICENSE
+build: $(foreach platform,$(PLATFORMS),bin/$(platform)/minui-list bin/$(platform)/minui-presenter) $(foreach arch,$(ARCHITECTURES),bin/$(arch)/evtest bin/$(arch)/coreutils bin/$(arch)/jq) bin/arm64/flycast.LICENSE
 
 bin/arm64/coreutils:
 	mkdir -p bin/arm64
@@ -49,8 +51,13 @@ bin/%/evtest:
 bin/arm64/flycast.LICENSE:
 	curl -sSL -o bin/arm64/flycast.LICENSE "https://raw.githubusercontent.com/flyinghead/flycast/refs/heads/master/LICENSE"
 
-bin/arm64/gptokeyb2.LICENSE:
-	curl -sSL -o bin/arm64/gptokeyb2.LICENSE "https://raw.githubusercontent.com/PortsMaster/gptokeyb2/refs/heads/master/LICENSE.txt"
+# dpad-arrows is committed like flycast, because this pak ships prebuilt
+# binaries rather than compiling them during a release. Run this after changing
+# src/dpad-arrows.c, and commit the result.
+dpad-arrows:
+	mkdir -p bin/arm64
+	docker run --rm -v "$(PWD)":/w -w /w $(CROSS_IMAGE) sh -c 'aarch64-linux-gnu-gcc -O2 -static -Wall -Wextra -o bin/arm64/dpad-arrows src/dpad-arrows.c && aarch64-linux-gnu-strip bin/arm64/dpad-arrows'
+	chmod +x bin/arm64/dpad-arrows
 
 bin/arm64/jq:
 	mkdir -p bin/arm64
