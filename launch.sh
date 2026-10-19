@@ -50,6 +50,23 @@ get_sanitized_rom_name() {
 	echo "$SANITIZED_ROM_NAME"
 }
 
+# Analog stick per h700 SKU, mirroring NextUI's own detection. Without a stick
+# there is nothing to swap the dpad with.
+#
+# NextUI reports the model twice and in two different cases: RGXX_MODEL is upper
+# case ("RGSP") while DEVICE is lower ("rgsp"). Normalize before matching.
+h700_has_lstick() {
+	model="$(echo "${RGXX_MODEL:-$DEVICE}" | tr '[:upper:]' '[:lower:]')"
+
+	case "$model" in
+	rg34xxsp | rg35xxh | rg35xxpro | rg40xxh | rg40xxv | rgcubexx)
+		return 0
+		;;
+	esac
+
+	return 1
+}
+
 # flycast builds its mapping filename as SDL_<SDL_JoystickName>.cfg, and SDL
 # takes that name from the pad's evdev name, which is not "Xbox 360 Controller"
 # outside of tg5040. Resolve it rather than guessing.
@@ -147,6 +164,14 @@ get_dpad_mode() {
 		dpad_mode="joystick-on-f2"
 	fi
 
+	# h700 has no trimui_inputd, so the two modes that need it fold onto
+	# "joystick", which the pak applies inside the flycast mapping instead.
+	if [ "$BASE_PLATFORM" = "h700" ]; then
+		if [ "$dpad_mode" = "joystick-and-dpad" ] || [ "$dpad_mode" = "joystick-on-f2" ]; then
+			dpad_mode="joystick"
+		fi
+	fi
+
 	echo "$dpad_mode"
 }
 
@@ -172,6 +197,15 @@ write_settings_json() {
 	widescreen_mode="$(get_widescreen_mode)"
 
 	jq -rM '{settings: .settings}' "$PAK_DIR/settings.json" >"$GAMESETTINGS_DIR/settings.json"
+
+	# only offer the dpad modes h700 can actually apply
+	if [ "$BASE_PLATFORM" = "h700" ]; then
+		# shellcheck disable=SC2016
+		jq -rM --argjson options '["dpad", "joystick"]' '
+			.settings |= map(if .name == "DPAD Mode" then . + {"options": $options} else . end)
+		' "$GAMESETTINGS_DIR/settings.json" >"$GAMESETTINGS_DIR/settings.json.tmp"
+		mv -f "$GAMESETTINGS_DIR/settings.json.tmp" "$GAMESETTINGS_DIR/settings.json"
+	fi
 
 	update_setting_key "$GAMESETTINGS_DIR/settings.json" "Controller Layout" "$controller_layout"
 	update_setting_key "$GAMESETTINGS_DIR/settings.json" "CPU Mode" "$cpu_mode"
@@ -303,21 +337,63 @@ configure_platform() {
 	sync
 }
 
+# h700 has no trimui_inputd, so "joystick" is applied inside the flycast mapping
+# instead. Only the hat binds are touched, identified by their flycast key codes
+# 256-259, so that a button someone bound to the Dreamcast dpad themselves is
+# left alone and the rewrite can be undone exactly.
+map_dpad_to_analog() {
+	mapping_file="$1"
+
+	for direction in up down left right; do
+		sed -i "s/= \(25[6-9]\):btn_dpad1_$direction/= \1:btn_analog_$direction/" "$mapping_file"
+	done
+}
+
+unmap_dpad_from_analog() {
+	mapping_file="$1"
+
+	for direction in up down left right; do
+		sed -i "s/= \(25[6-9]\):btn_analog_$direction/= \1:btn_dpad1_$direction/" "$mapping_file"
+	done
+}
+
+# On a model with a stick the two are exchanged, so the stick still drives the
+# Dreamcast dpad and flycast's own menu stays navigable.
+#
+# The first stick has two spellings: the v3 "axis_left" that flycast writes
+# itself, and the "btn_analog_left" compat name this pak ships. Normalize onto
+# the compat name so that applying the swap twice restores the original mapping,
+# which cleanup() relies on.
+swap_dpad_and_stick() {
+	mapping_file="$1"
+
+	for direction in up down left right; do
+		sed -i \
+			-e "s/:axis_$direction/:btn_analog_$direction/" \
+			-e "s/:btn_analog_$direction/:__stick_$direction/" \
+			-e "s/:btn_dpad1_$direction/:btn_analog_$direction/" \
+			-e "s/:__stick_$direction/:btn_dpad1_$direction/" \
+			"$mapping_file"
+	done
+}
+
 configure_controls() {
 	controller_layout="$(get_controller_layout)"
 	dpad_mode="$(get_dpad_mode)"
 	mapping_file_name="$(get_mapping_file_name)"
 
-	if [ "$dpad_mode" = "joystick-on-f2" ]; then
-		mkdir -p /tmp/trimui_inputd/
-		touch /tmp/trimui_inputd/dpad2axis_hold_f2
-	elif [ "$dpad_mode" = "joystick-and-dpad" ]; then
-		mkdir -p /tmp/trimui_inputd/
-		touch /tmp/trimui_inputd/input_dpad_to_joystick
-	elif [ "$dpad_mode" = "joystick" ]; then
-		mkdir -p /tmp/trimui_inputd/
-		touch /tmp/trimui_inputd/input_no_dpad
-		touch /tmp/trimui_inputd/input_dpad_to_joystick
+	if [ "$BASE_PLATFORM" != "h700" ]; then
+		if [ "$dpad_mode" = "joystick-on-f2" ]; then
+			mkdir -p /tmp/trimui_inputd/
+			touch /tmp/trimui_inputd/dpad2axis_hold_f2
+		elif [ "$dpad_mode" = "joystick-and-dpad" ]; then
+			mkdir -p /tmp/trimui_inputd/
+			touch /tmp/trimui_inputd/input_dpad_to_joystick
+		elif [ "$dpad_mode" = "joystick" ]; then
+			mkdir -p /tmp/trimui_inputd/
+			touch /tmp/trimui_inputd/input_no_dpad
+			touch /tmp/trimui_inputd/input_dpad_to_joystick
+		fi
 	fi
 
 	mkdir -p "${FLYCAST_CONFIG_DIR}mappings"
@@ -336,6 +412,15 @@ configure_controls() {
 			cp -f "$GAMESETTINGS_DIR/$mapping_file_name" "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name"
 		else
 			cp -f "$PAK_DIR/config/mappings/default/$DEFAULT_MAPPING_FILE_NAME" "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name"
+		fi
+	fi
+
+	if [ "$BASE_PLATFORM" = "h700" ] && [ "$dpad_mode" = "joystick" ]; then
+		if h700_has_lstick; then
+			swap_dpad_and_stick "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name"
+		else
+			map_dpad_to_analog "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name"
+			show_message "DPAD is the analog stick. The flycast menu cannot be navigated in this mode." 2
 		fi
 	fi
 }
@@ -444,9 +529,11 @@ cleanup() {
 	fi
 
 	# cleanup remap
-	rm -f /tmp/trimui_inputd/input_no_dpad
-	rm -f /tmp/trimui_inputd/input_dpad_to_joystick
-	rm -f /tmp/trimui_inputd/dpad2axis_hold_f2
+	if [ "$BASE_PLATFORM" != "h700" ]; then
+		rm -f /tmp/trimui_inputd/input_no_dpad
+		rm -f /tmp/trimui_inputd/input_dpad_to_joystick
+		rm -f /tmp/trimui_inputd/dpad2axis_hold_f2
+	fi
 
 	# remove resume slot
 	rm -f /tmp/resume_slot.txt
@@ -497,6 +584,16 @@ cleanup() {
 		mapping_file_name="$(get_mapping_file_name)"
 		mkdir -p "$GAMESETTINGS_DIR"
 		cp -f "${FLYCAST_CONFIG_DIR}mappings/$mapping_file_name" "$GAMESETTINGS_DIR/$mapping_file_name"
+
+		# the rewrite is layered on top of the saved mapping, so undo it before
+		# saving or the next launch would apply it to an already rewritten file
+		if [ "$BASE_PLATFORM" = "h700" ] && [ "$(get_dpad_mode)" = "joystick" ]; then
+			if h700_has_lstick; then
+				swap_dpad_and_stick "$GAMESETTINGS_DIR/$mapping_file_name"
+			else
+				unmap_dpad_from_analog "$GAMESETTINGS_DIR/$mapping_file_name"
+			fi
+		fi
 	fi
 
 	sync
